@@ -1,0 +1,1284 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Self-Attention 互動式視覺化</title>
+<!--
+  ============================================================================
+  Transformer Scaled Dot-Product Attention 互動式視覺化（方塊圖導覽版）
+  ----------------------------------------------------------------------------
+  Attention(Q, K, V) = softmax( Q·Kᵀ / sqrt(d_k) / T ) · V
+
+  架構：左側演算法方塊圖為主體，點選任一方塊，右側才展開該步驟的實際數值。
+  ‣ 單一檔案：HTML + CSS + JS 全部內嵌，雙擊即可執行，不需 Node.js／建置工具
+  ‣ 零外部相依：矩陣相乘、轉置、Softmax、亂數全部純原生 JS 手寫
+  ============================================================================
+-->
+<style>
+/* ===========================================================================
+   0. 設計語彙（Design Tokens）
+   =========================================================================== */
+:root {
+  color-scheme: dark;
+  --bg:          #0d0d0d;
+  --surface:     #1a1a19;
+  --surface-2:   #212120;
+  --ink:         #ffffff;
+  --ink-2:       #c3c2b7;
+  --muted:       #898781;
+  --grid:        #2c2c2a;
+  --border:      rgba(255,255,255,0.10);
+  --accent:      #3987e5;
+  --accent-soft: rgba(57,135,229,0.14);
+  --warn:        #fab219;
+  --radius:      14px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", "PingFang TC", "Noto Sans TC",
+          "Microsoft JhengHei", sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--ink);
+  font-family: var(--sans); font-size: 15px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  padding: 0 16px 64px;
+}
+.wrap { max-width: 1320px; margin: 0 auto; }
+
+/* --------------------------------------------------------------- 頁首 --- */
+header { padding: 30px 0 20px; }
+h1 { font-size: clamp(20px, 3vw, 27px); margin: 0 0 8px; letter-spacing: -0.02em; }
+.subtitle { color: var(--ink-2); margin: 0 0 16px; max-width: 70ch; font-size: 14px; }
+.formula {
+  display: inline-block; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px 16px; font-family: var(--mono);
+  font-size: clamp(12px, 1.8vw, 15px); overflow-x: auto; max-width: 100%; white-space: nowrap;
+}
+.formula .hl { color: var(--accent); }
+.formula .hl-2 { color: var(--warn); }
+
+/* ------------------------------------------------------- 控制列 --- */
+.panel {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px 18px; margin: 20px 0 24px;
+}
+.panel-grid {
+  display: grid; grid-template-columns: minmax(240px, 2fr) 120px minmax(190px, 1fr) auto;
+  gap: 16px 22px; align-items: end;
+}
+@media (max-width: 880px) { .panel-grid { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 520px) { .panel-grid { grid-template-columns: 1fr; } }
+
+.field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.field > label {
+  font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--muted); font-weight: 600;
+}
+.hint { font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+input[type="text"], select {
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--ink);
+  border-radius: 9px; padding: 9px 12px; font-family: var(--sans); font-size: 14px; width: 100%;
+}
+input[type="text"]:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+
+input[type="range"] {
+  -webkit-appearance: none; appearance: none; width: 100%; height: 4px;
+  border-radius: 2px; background: var(--grid); margin: 10px 0 2px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; width: 17px; height: 17px; border-radius: 50%;
+  background: var(--accent); border: 3px solid var(--surface); cursor: pointer;
+}
+input[type="range"]::-moz-range-thumb {
+  width: 17px; height: 17px; border-radius: 50%;
+  background: var(--accent); border: 3px solid var(--surface); cursor: pointer;
+}
+.slider-head { display: flex; justify-content: space-between; align-items: baseline; }
+.slider-val { font-family: var(--mono); font-size: 14px; color: var(--accent); font-weight: 600; }
+
+.btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
+button {
+  background: var(--surface-2); color: var(--ink); border: 1px solid var(--border);
+  border-radius: 9px; padding: 9px 14px; font-family: var(--sans); font-size: 13px;
+  cursor: pointer; transition: background .15s, border-color .15s; white-space: nowrap;
+}
+button:hover { background: #2b2b29; border-color: rgba(255,255,255,0.2); }
+button:active { transform: translateY(1px); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #041a33; font-weight: 600; }
+button.primary:hover { background: #4d93e8; }
+button:disabled { opacity: .35; cursor: default; }
+button:disabled:hover { background: var(--surface-2); border-color: var(--border); }
+
+.err {
+  background: rgba(208,59,59,.12); border: 1px solid rgba(208,59,59,.4);
+  color: #ffb4b4; border-radius: 9px; padding: 9px 13px; font-size: 13px; margin-top: 12px;
+}
+.err:empty { display: none; }
+
+/* ===================================================== 主版面 ====== */
+.app {
+  display: grid;
+  grid-template-columns: minmax(340px, 430px) 1fr;
+  gap: 24px; align-items: start;
+}
+@media (max-width: 1040px) { .app { grid-template-columns: 1fr; } }
+
+/* ------------------------------------------------- 左：方塊圖 --- */
+.diagram-pane {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px 16px 14px;
+  position: sticky; top: 14px;
+}
+@media (max-width: 1040px) { .diagram-pane { position: static; } }
+
+.pane-label {
+  font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--muted); font-weight: 600; margin-bottom: 10px;
+}
+figure.diag-fig { margin: 0; }
+svg.diag {
+  width: 100%; height: auto; display: block;
+  max-height: calc(100vh - 210px);
+}
+@media (max-width: 1040px) { svg.diag { max-height: none; } }
+svg.diag .dnode { cursor: pointer; }
+svg.diag .n-title { font-family: var(--sans); font-size: 14px; font-weight: 600; fill: var(--ink); }
+svg.diag .n-sub   { font-family: var(--mono); font-size: 11px; fill: var(--muted); }
+svg.diag .e-label { font-family: var(--sans); font-size: 10.5px; fill: var(--muted); }
+
+.shape-legend {
+  display: flex; gap: 6px 14px; flex-wrap: wrap;
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);
+  font-size: 11.5px; color: var(--ink-2);
+}
+.shape-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.shape-legend i { width: 16px; height: 11px; border-radius: 3px; display: inline-block; }
+
+/* ------------------------------------------------- 右：細節 --- */
+.detail-pane {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 22px; min-width: 0;
+}
+.detail-head {
+  display: flex; gap: 14px; align-items: flex-start;
+  justify-content: space-between; flex-wrap: wrap; margin-bottom: 4px;
+}
+.detail-title { display: flex; gap: 12px; align-items: flex-start; min-width: 0; }
+.step-num {
+  flex: none; width: 30px; height: 30px; border-radius: 8px;
+  background: var(--accent-soft); color: var(--accent);
+  font-family: var(--mono); font-size: 12px; font-weight: 700;
+  display: grid; place-items: center; margin-top: 2px;
+}
+.detail-title h2 { font-size: 18px; margin: 0 0 3px; letter-spacing: -0.01em; }
+.eq {
+  font-family: var(--mono); font-size: 12.5px; color: var(--accent);
+  background: rgba(57,135,229,0.08); padding: 2px 7px; border-radius: 5px;
+  white-space: nowrap; display: inline-block;
+}
+.nav-row { display: flex; gap: 8px; align-items: center; }
+.nav-pos { font-family: var(--mono); font-size: 12px; color: var(--muted); padding: 0 4px; }
+
+.why-text {
+  color: var(--ink-2); font-size: 13.5px; line-height: 1.7;
+  margin: 14px 0 20px 42px; max-width: 78ch;
+  border-left: 2px solid var(--accent-soft); padding-left: 14px;
+}
+@media (max-width: 600px) { .why-text { margin-left: 0; } }
+
+/* ---------------------------------------------------------- 矩陣 --- */
+.mat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 18px; }
+.mat-box { min-width: 0; }
+.mat-title {
+  font-family: var(--mono); font-size: 12.5px; color: var(--ink-2);
+  margin-bottom: 8px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
+}
+.mat-title b { color: var(--ink); font-weight: 600; font-size: 14px; }
+.mat-title .dim { color: var(--muted); font-size: 11.5px; }
+.mat-scroll { overflow-x: auto; padding-bottom: 4px; }
+
+table.mat { border-collapse: separate; border-spacing: 2px; font-family: var(--mono); }
+table.mat th, table.mat td {
+  font-size: 12px; font-weight: 400; text-align: right;
+  padding: 6px 9px; border-radius: 5px; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+table.mat th { color: var(--muted); font-size: 11px; background: transparent; }
+table.mat th.rowlab {
+  text-align: left; color: var(--ink); background: var(--surface-2);
+  font-size: 12.5px; cursor: pointer; user-select: none;
+}
+table.mat th.rowlab:hover { background: #2f2f2c; }
+table.mat td { background: var(--surface-2); color: var(--ink-2); }
+table.mat td.filled { color: #0b0b0b; }
+tr.rowsel th.rowlab { outline: 2px solid var(--accent); }
+tr.dim { opacity: .45; }
+td.cellhi { outline: 2px solid #ffffff; outline-offset: -2px; }
+
+/* --------------------------------------------------------- 圖例 --- */
+.legend { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.legend .bar { height: 10px; width: 180px; border-radius: 5px; border: 1px solid var(--border); }
+.legend .lab { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+/* ------------------------------------------------- 單列分布長條 --- */
+.dist { margin-top: 0; }
+.dist h3 { font-size: 13px; margin: 0 0 12px; color: var(--ink-2); font-weight: 600; }
+.dist-row { display: grid; grid-template-columns: 70px 1fr 50px; align-items: center; gap: 10px; margin-bottom: 7px; }
+.dist-tok { font-family: var(--mono); font-size: 12.5px; color: var(--ink); text-align: right;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dist-track { background: var(--surface-2); border-radius: 4px; height: 16px; overflow: hidden; }
+.dist-fill { height: 100%; border-radius: 4px; transition: width .18s ease; }
+.dist-val { font-family: var(--mono); font-size: 12px; color: var(--ink-2);
+            font-variant-numeric: tabular-nums; text-align: right; }
+
+.two-col { display: grid; grid-template-columns: auto minmax(240px, 1fr); gap: 26px; align-items: start; }
+@media (max-width: 820px) { .two-col { grid-template-columns: 1fr; gap: 18px; } }
+
+/* ------------------------------------------------------ 連結圖 --- */
+.flow-wrap { display: grid; grid-template-columns: 1fr 230px; gap: 20px; align-items: start; }
+@media (max-width: 780px) { .flow-wrap { grid-template-columns: 1fr; } }
+svg.flow { width: 100%; height: auto; display: block; overflow: visible; }
+svg.flow .tokbox { cursor: pointer; }
+svg.flow .toklabel { font-family: var(--mono); font-size: 13px; fill: var(--ink); pointer-events: none; }
+svg.flow .collabel { font-family: var(--sans); font-size: 11px; fill: var(--muted); letter-spacing: .08em; text-transform: uppercase; }
+svg.flow .wlabel { font-family: var(--mono); font-size: 10px; fill: var(--ink-2); pointer-events: none; }
+.flow-side { font-size: 13px; color: var(--ink-2); }
+.flow-side .k { color: var(--muted); font-size: 12px; }
+
+/* --------------------------------------------------- 數值小卡 --- */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 4px 0 20px; }
+.tile { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.tile .tl { font-size: 11.5px; color: var(--muted); margin-bottom: 4px; }
+.tile .tv { font-family: var(--mono); font-size: 21px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.tile .tn { font-size: 11.5px; color: var(--ink-2); margin-top: 3px; line-height: 1.45; }
+
+/* --------------------------------------------------- Token 晶片 --- */
+.chips { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+.chip {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
+  padding: 9px 13px; display: flex; flex-direction: column; gap: 2px; min-width: 76px;
+}
+.chip .ci { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+.chip .ct { font-family: var(--mono); font-size: 17px; color: var(--ink); }
+.chip .ch { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+
+.note { font-size: 12.5px; color: var(--muted); line-height: 1.65; margin-top: 16px; max-width: 74ch; }
+.note code { font-family: var(--mono); color: var(--ink-2); font-size: 12px; }
+
+footer {
+  margin-top: 36px; padding-top: 20px; border-top: 1px solid var(--border);
+  color: var(--muted); font-size: 12.5px; line-height: 1.7;
+}
+kbd { font-family: var(--mono); font-size: 11px; background: var(--surface-2);
+      border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--ink-2); }
+</style>
+</head>
+
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Self-Attention 互動式視覺化</h1>
+  <p class="subtitle">
+    主體是完整的演算法方塊圖。<strong style="color:var(--ink)">點任一方塊</strong>，就會展開那一步的實際矩陣與數值；
+    所有數字都是這個頁面當場用原生 JavaScript 算出來的，會跟著下面的參數即時重算。
+  </p>
+  <div class="formula">
+    Attention(<span class="hl">Q</span>, <span class="hl">K</span>, <span class="hl">V</span>)
+    = softmax( <span class="hl">Q</span>·<span class="hl">K</span>ᵀ / √d_k / <span class="hl-2">T</span> ) · <span class="hl">V</span>
+  </div>
+</header>
+
+<!-- ================================================== 控制列 ====== -->
+<section class="panel" aria-label="參數設定">
+  <div class="panel-grid">
+    <div class="field">
+      <label for="tokenInput">Token 清單</label>
+      <input type="text" id="tokenInput" value="我 喜 歡 貓" autocomplete="off" spellcheck="false">
+      <div class="btn-row" style="margin-top:2px">
+        <button type="button" data-preset="我 喜 歡 貓">中文</button>
+        <button type="button" data-preset="The animal didn't cross">英文</button>
+        <button type="button" data-preset="我 愛 吃 牛 肉 麵">6 Token</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="dkSelect">維度 d_k</label>
+      <select id="dkSelect">
+        <option value="2">2</option>
+        <option value="4" selected>4</option>
+        <option value="8">8</option>
+        <option value="16">16</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="tempRange">Temperature T</label>
+      <div class="slider-head">
+        <span class="hint" style="margin:0">銳利</span>
+        <span class="slider-val" id="tempVal">1.00</span>
+        <span class="hint" style="margin:0">平坦</span>
+      </div>
+      <input type="range" id="tempRange" min="0.1" max="5" step="0.05" value="1">
+    </div>
+
+    <div class="field">
+      <label>權重</label>
+      <div class="btn-row">
+        <button type="button" id="reroll" class="primary">🎲 重抽權重</button>
+        <button type="button" id="reset">重設</button>
+      </div>
+      <div class="hint">種子 <span id="seedTag" style="font-family:var(--mono)">—</span></div>
+    </div>
+  </div>
+  <div class="err" id="err"></div>
+</section>
+
+<!-- ================================================== 主版面 ====== -->
+<div class="app">
+
+  <!-- 左：方塊圖（主體） -->
+  <aside class="diagram-pane">
+    <div class="pane-label">演算法方塊圖 · 點選方塊看細節</div>
+    <figure class="diag-fig">
+      <svg class="diag" id="diagSvg" role="img"
+           aria-label="Self-Attention 資料流方塊圖：Token 序列經 Embedding 投影成 Q、K、V；Q 與 K 做點積後除以根號 d_k，再經 Softmax 得到注意力矩陣 A，最後與 V 相乘輸出。"></svg>
+      <div class="shape-legend">
+        <span><i style="background:#212120;border:1px solid rgba(255,255,255,0.22)"></i>張量</span>
+        <span><i style="background:rgba(57,135,229,0.16);border:1px solid #3987e5"></i>運算</span>
+        <span><i style="background:transparent;border:1px dashed #fab219"></i>可學習權重</span>
+        <span><i style="background:rgba(57,135,229,0.30);border:1px solid #9ec5f4"></i>輸出</span>
+      </div>
+    </figure>
+  </aside>
+
+  <!-- 右：細節 -->
+  <section class="detail-pane" id="detailPane" aria-live="polite"></section>
+
+</div>
+
+<footer>
+  單一 HTML 檔，無外部相依。矩陣相乘、轉置、數值穩定 Softmax、Box–Muller 常態亂數皆為原生 JavaScript 手寫實作。
+  Embedding 以 FNV-1a 字串雜湊決定，W<sub>q</sub>／W<sub>k</sub>／W<sub>v</sub> 由 mulberry32 種子亂數產生，故結果完全可重現。
+  <br>快捷鍵：<kbd>←</kbd> <kbd>→</kbd> 前後切換步驟，<kbd>R</kbd> 重抽權重。
+</footer>
+
+</div><!-- /.wrap -->
+
+<script>
+"use strict";
+/* ===========================================================================
+   1. 數學工具層 —— 全部純原生 JS，無任何函式庫
+   =========================================================================== */
+
+/** 產生 m×n 的零矩陣 */
+function zeros(m, n) {
+  return Array.from({ length: m }, () => new Array(n).fill(0));
+}
+
+/** 矩陣相乘：A(m×k) · B(k×n) → C(m×n)；i-p-j 迴圈順序對快取較友善 */
+function matmul(A, B) {
+  const m = A.length, k = B.length, n = B[0].length;
+  if (A[0].length !== k) throw new Error("矩陣維度不匹配：A 的行數必須等於 B 的列數");
+  const C = zeros(m, n);
+  for (let i = 0; i < m; i++) {
+    const Ai = A[i], Ci = C[i];
+    for (let p = 0; p < k; p++) {
+      const a = Ai[p];
+      if (a === 0) continue;
+      const Bp = B[p];
+      for (let j = 0; j < n; j++) Ci[j] += a * Bp[j];
+    }
+  }
+  return C;
+}
+
+/** 轉置：A(m×n) → Aᵀ(n×m) */
+function transpose(A) {
+  const m = A.length, n = A[0].length;
+  const T = zeros(n, m);
+  for (let i = 0; i < m; i++)
+    for (let j = 0; j < n; j++) T[j][i] = A[i][j];
+  return T;
+}
+
+/**
+ * 數值穩定版 Softmax（含 Temperature）
+ * 先除以 T，再減去最大值才取 exp，避免 exp 溢位（overflow）產生 NaN。
+ */
+function softmax(row, T) {
+  const t = Math.max(T, 1e-6);
+  const scaled = row.map(v => v / t);
+  let mx = -Infinity;
+  for (const v of scaled) if (v > mx) mx = v;
+  const exps = scaled.map(v => Math.exp(v - mx));
+  let sum = 0;
+  for (const e of exps) sum += e;
+  return exps.map(e => e / sum);
+}
+
+/** 對矩陣逐列做 Softmax */
+function softmaxRows(M, T) { return M.map(row => softmax(row, T)); }
+
+/** 矩陣除以純量 */
+function scaleMat(M, s) { return M.map(row => row.map(v => v / s)); }
+
+/** 全矩陣元素的標準差（用來展示 √d_k 的縮放效果） */
+function stdAll(M) {
+  const xs = M.flat();
+  const mu = xs.reduce((a, b) => a + b, 0) / xs.length;
+  return Math.sqrt(xs.reduce((a, v) => a + (v - mu) * (v - mu), 0) / xs.length);
+}
+
+/* ----------------------------- 可重現的偽亂數 ----------------------------- */
+
+/** mulberry32：32-bit 種子 PRNG，回傳 [0,1) 均勻亂數 */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Box–Muller：把兩個均勻亂數轉成一個標準常態 N(0,1) 取樣 */
+function gaussian(rng) {
+  let u = 0, v = 0;
+  while (u === 0) u = rng();
+  while (v === 0) v = rng();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+
+/** FNV-1a 字串雜湊：同一個 Token 永遠對應同一組 Embedding */
+function hashString(s) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h >>> 0;
+}
+
+/** m×n 常態亂數矩陣，標準差 std */
+function randn(m, n, rng, std) {
+  const M = zeros(m, n);
+  for (let i = 0; i < m; i++)
+    for (let j = 0; j < n; j++) M[i][j] = gaussian(rng) * std;
+  return M;
+}
+
+/* ===========================================================================
+   2. 色彩映射層
+   Sequential（單一藍色相，越亮＝越大）：注意力權重 0~1
+   Diverging（藍↔紅，中點灰）：可正可負的原始分數
+   =========================================================================== */
+function hex2rgb(h) {
+  return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+}
+function rgbStr(c) { return "rgb(" + c.map(v => Math.round(Math.max(0, Math.min(255, v)))).join(",") + ")"; }
+function lerp(c1, c2, t) { return [0, 1, 2].map(i => c1[i] + (c2[i] - c1[i]) * t); }
+function rampAt(stops, t) {
+  const n = stops.length - 1;
+  const x = Math.max(0, Math.min(1, t)) * n;
+  const i = Math.min(n - 1, Math.floor(x));
+  return lerp(stops[i], stops[i + 1], x - i);
+}
+const SEQ = ["#171a20", "#0d366b", "#184f95", "#256abf", "#3987e5", "#6da7ec", "#9ec5f4", "#cde2fb"].map(hex2rgb);
+const DIV_NEG = ["#383835", "#a83b3b", "#e66767", "#f5a3a3"].map(hex2rgb);
+const DIV_POS = ["#383835", "#1c5cab", "#3987e5", "#9ec5f4"].map(hex2rgb);
+
+function seqColor(v) { return rampAt(SEQ, v); }
+function divColor(v, maxAbs) {
+  const t = maxAbs > 0 ? Math.abs(v) / maxAbs : 0;
+  return v >= 0 ? rampAt(DIV_POS, t) : rampAt(DIV_NEG, t);
+}
+/** 依背景亮度決定文字用深色或淺色（WCAG 相對亮度） */
+function inkOn(rgb) {
+  const [r, g, b] = rgb.map(c => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  });
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) > 0.35 ? "#0b0b0b" : "#e9e9e6";
+}
+
+/* ===========================================================================
+   3. 應用狀態
+   =========================================================================== */
+const DEFAULT_TOKENS = "我 喜 歡 貓";
+
+const state = {
+  tokens: [],
+  dk: 4,
+  temp: 1.0,
+  seed: 20260920,
+  sel: "tok",      // 目前選取的細節面板 id
+  lockedQ: 0,      // 熱力圖／連結圖中鎖定的 Query index
+  hoverQ: null,
+  model: null
+};
+
+function activeQ() { return state.hoverQ !== null ? state.hoverQ : state.lockedQ; }
+
+/** Token 字串解析：空白、半形／全形逗號、頓號、分號、豎線都能當分隔 */
+function parseTokens(raw) {
+  return raw.split(/[\s,，、;；|]+/).map(s => s.trim()).filter(Boolean).slice(0, 12);
+}
+
+/* ===========================================================================
+   4. 核心計算：跑完整條 Attention 流程
+   =========================================================================== */
+function compute() {
+  const tokens = state.tokens, n = tokens.length, dk = state.dk;
+
+  // (a) Embedding：由 Token 字串雜湊決定，與權重種子無關
+  const E = zeros(n, dk);
+  for (let i = 0; i < n; i++) {
+    const rng = mulberry32(hashString(tokens[i]) ^ 0x9E3779B9);
+    for (let j = 0; j < dk; j++) E[i][j] = gaussian(rng);
+  }
+
+  // (b) 三組投影權重：由全域種子決定，標準差取 1/√d_k（Xavier 風格），
+  //     使 Q/K/V 的每個分量仍接近 N(0,1)
+  const std = 1 / Math.sqrt(dk);
+  const rngW = mulberry32(state.seed);
+  const Wq = randn(dk, dk, rngW, std);
+  const Wk = randn(dk, dk, rngW, std);
+  const Wv = randn(dk, dk, rngW, std);
+
+  // (c) 線性投影
+  const Q = matmul(E, Wq), K = matmul(E, Wk), V = matmul(E, Wv);
+
+  // (d) 點積 → 縮放
+  const Sraw = matmul(Q, transpose(K));
+  const S = scaleMat(Sraw, Math.sqrt(dk));
+
+  // (e) 逐列 Softmax（含 Temperature）
+  const A = softmaxRows(S, state.temp);
+
+  // (f) 加權輸出
+  const O = matmul(A, V);
+
+  // 供色階與統計小卡使用
+  const absOf = M => { let x = 0; for (const r of M) for (const v of r) x = Math.max(x, Math.abs(v)); return x; };
+  const Araw = softmaxRows(Sraw, state.temp);            // 「如果沒有除以 √d_k」的對照
+  const peak = M => M.reduce((a, r) => a + Math.max(...r), 0) / M.length;
+
+  state.model = {
+    tokens, n, dk, E, Wq, Wk, Wv, Q, K, V, Sraw, S, A, O,
+    maxAbsRaw: absOf(Sraw), maxAbs: absOf(S),
+    stdRaw: stdAll(Sraw), stdS: stdAll(S),
+    peakRaw: peak(Araw), peakS: peak(A)
+  };
+}
+
+/* ===========================================================================
+   5. 共用渲染元件
+   =========================================================================== */
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+/**
+ * 矩陣表格 HTML
+ * opt = { title, sub, dims, rowLabels, colLabels, data, decimals,
+ *         mode:"plain"|"seq"|"div", maxAbs, interactive }
+ */
+function matrixHTML(opt) {
+  const { title, sub = "", dims = "", rowLabels, colLabels, data,
+          decimals = 2, mode = "plain", maxAbs = 1, interactive = false } = opt;
+  const act = activeQ();
+  let h = "";
+
+  if (title) {
+    h += '<div class="mat-title"><b>' + esc(title) + "</b>" +
+         (sub ? "<span>" + esc(sub) + "</span>" : "") +
+         (dims ? '<span class="dim">' + esc(dims) + "</span>" : "") + "</div>";
+  }
+  h += '<div class="mat-scroll"><table class="mat"><thead><tr><th></th>';
+  for (const c of colLabels) h += "<th>" + esc(c) + "</th>";
+  h += "</tr></thead><tbody>";
+
+  for (let i = 0; i < data.length; i++) {
+    const sel = interactive && act === i;
+    const dimmed = interactive && act !== null && act !== i;
+    h += '<tr class="' + (sel ? "rowsel " : "") + (dimmed ? "dim" : "") + '">';
+    h += '<th class="rowlab"' + (interactive ? ' data-q="' + i + '"' : "") + ">" + esc(rowLabels[i]) + "</th>";
+    for (let j = 0; j < data[i].length; j++) {
+      const v = data[i][j];
+      let style = "", cls = "";
+      if (mode === "seq") {
+        const c = seqColor(v);
+        style = "background:" + rgbStr(c) + ";color:" + inkOn(c); cls = " filled";
+      } else if (mode === "div") {
+        const c = divColor(v, maxAbs);
+        style = "background:" + rgbStr(c) + ";color:" + inkOn(c); cls = " filled";
+      }
+      h += '<td class="' + cls.trim() + (sel ? " cellhi" : "") + '" style="' + style + '" title="' +
+           esc(rowLabels[i]) + " → " + esc(colLabels[j]) + " = " + v.toFixed(4) + '">' +
+           v.toFixed(decimals) + "</td>";
+    }
+    h += "</tr>";
+  }
+  return h + "</tbody></table></div>";
+}
+
+function dimLabels(n, prefix) {
+  return Array.from({ length: n }, (_, i) => (prefix || "") + i);
+}
+
+/** 顏色圖例（sequential） */
+function seqLegendHTML(caption) {
+  const stops = [];
+  for (let i = 0; i <= 10; i++) stops.push(rgbStr(seqColor(i / 10)) + " " + (i * 10) + "%");
+  return '<div class="legend"><span class="lab">0.00</span>' +
+         '<div class="bar" style="background:linear-gradient(90deg,' + stops.join(",") + ')"></div>' +
+         '<span class="lab">1.00</span><span class="lab" style="margin-left:6px">' + esc(caption) + "</span></div>";
+}
+
+/** 統計小卡 */
+function tilesHTML(items) {
+  return '<div class="tiles">' + items.map(t =>
+    '<div class="tile"><div class="tl">' + esc(t.l) + '</div><div class="tv">' + esc(t.v) + "</div>" +
+    (t.n ? '<div class="tn">' + esc(t.n) + "</div>" : "") + "</div>").join("") + "</div>";
+}
+
+/** 選取列的注意力分布長條 */
+function distHTML() {
+  const m = state.model, q = activeQ();
+  if (q === null || q >= m.n) return "";
+  const row = m.A[q], mx = Math.max(...row);
+  // 長條一律以 0~1 為固定刻度（不是以該列最大值正規化），
+  // 這樣拖 Temperature 時才看得出「集中 ↔ 均勻」的絕對變化。
+  let h = '<div class="dist"><h3>Query「' + esc(m.tokens[q]) + "」的注意力分布　" +
+          '<span style="color:var(--muted);font-weight:400">刻度 0–1，均勻時為 ' +
+          (1 / m.n).toFixed(2) + "</span></h3>";
+  for (let j = 0; j < m.n; j++) {
+    h += '<div class="dist-row">' +
+         '<div class="dist-tok">' + esc(m.tokens[j]) + "</div>" +
+         '<div class="dist-track"><div class="dist-fill" style="width:' +
+           (row[j] * 100).toFixed(2) + "%;background:" + rgbStr(seqColor(row[j])) + '"></div></div>' +
+         '<div class="dist-val"' + (row[j] === mx ? ' style="color:var(--ink);font-weight:600"' : "") +
+           ">" + row[j].toFixed(2) + "</div></div>";
+  }
+  return h + "</div>";
+}
+
+/* ===========================================================================
+   6. 方塊圖（主體）
+   幾何座標寫死在 viewBox 座標系，由 CSS 負責縮放（RWD）。
+   =========================================================================== */
+const DG = {
+  W: 520, H: 702, h: 40,
+  rows: [10, 80, 150, 220, 296, 366, 436, 506, 582, 652],
+  cL: 94, cM: 260, cR: 426,
+  cQK: 177, cAV: 301,
+  wWide: 190, wNarrow: 132, wHead: 180,
+  bus1: 135, bus2: 278, bus3: 564
+};
+
+/** 方塊定義；panel 欄位決定點下去要顯示哪個細節面板 */
+function diagramNodes(m) {
+  const r = DG.rows, n = m.n, dk = m.dk;
+  const sh = (a, b) => a + " × " + b;
+  return [
+    { id: "tok", panel: "tok", x: DG.cM,  y: r[0], w: DG.wHead,   kind: "data",  t: "Token 序列",     s: n + " 個 Token" },
+    { id: "emb", panel: "emb", x: DG.cM,  y: r[1], w: DG.wHead,   kind: "data",  t: "Embedding　E",   s: sh(n, dk) },
+
+    { id: "wq",  panel: "q",   x: DG.cL,  y: r[2], w: DG.wNarrow, kind: "param", t: "× W_q",          s: sh(dk, dk) },
+    { id: "wk",  panel: "k",   x: DG.cM,  y: r[2], w: DG.wNarrow, kind: "param", t: "× W_k",          s: sh(dk, dk) },
+    { id: "wv",  panel: "v",   x: DG.cR,  y: r[2], w: DG.wNarrow, kind: "param", t: "× W_v",          s: sh(dk, dk) },
+
+    { id: "q",   panel: "q",   x: DG.cL,  y: r[3], w: DG.wNarrow, kind: "data",  t: "Q　Query",       s: sh(n, dk) },
+    { id: "k",   panel: "k",   x: DG.cM,  y: r[3], w: DG.wNarrow, kind: "data",  t: "K　Key",         s: sh(n, dk) },
+    { id: "v",   panel: "v",   x: DG.cR,  y: r[3], w: DG.wNarrow, kind: "data",  t: "V　Value",       s: sh(n, dk) },
+
+    { id: "qk",  panel: "qk",  x: DG.cQK, y: r[4], w: DG.wWide,   kind: "op",    t: "MatMul　Q · Kᵀ", s: sh(n, n) },
+    { id: "sc",  panel: "sc",  x: DG.cQK, y: r[5], w: DG.wWide,   kind: "op",    t: "Scale　÷ √d_k",  s: "÷ " + Math.sqrt(dk).toFixed(3) },
+    { id: "sm",  panel: "sm",  x: DG.cQK, y: r[6], w: DG.wWide,   kind: "op",    t: "Softmax（逐列）", s: "÷ T = " + state.temp.toFixed(2) },
+    { id: "a",   panel: "a",   x: DG.cQK, y: r[7], w: DG.wWide,   kind: "data",  t: "A　注意力矩陣",  s: sh(n, n) },
+
+    { id: "av",  panel: "av",  x: DG.cAV, y: r[8], w: DG.wWide,   kind: "op",    t: "MatMul　A · V",  s: sh(n, dk) },
+    { id: "out", panel: "out", x: DG.cAV, y: r[9], w: DG.wWide,   kind: "out",   t: "Output",         s: sh(n, dk) }
+  ];
+}
+
+function diagBox(nd, sel) {
+  const x = nd.x - nd.w / 2, y = nd.y, w = nd.w, h = DG.h;
+  let fill, stroke, dash = "", sw = 1, op = 1;
+
+  if (nd.kind === "data")       { fill = "#212120"; stroke = "rgba(255,255,255,0.22)"; }
+  else if (nd.kind === "op")    { fill = "rgba(57,135,229,0.16)"; stroke = "#3987e5"; }
+  else if (nd.kind === "param") { fill = "rgba(250,178,25,0.07)"; stroke = "#fab219"; dash = ' stroke-dasharray="5 3"'; }
+  else                          { fill = "rgba(57,135,229,0.30)"; stroke = "#9ec5f4"; }
+
+  if (sel) { stroke = "#ffffff"; sw = 2.2; }
+  else     { op = 0.62; }                        // 未選取的方塊淡一些，讓焦點清楚
+
+  return '<g class="dnode" data-panel="' + nd.panel + '" opacity="' + op + '">' +
+         '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h +
+           '" rx="9" fill="' + fill + '" stroke="' + stroke + '" stroke-width="' + sw + '"' + dash + "/>" +
+         '<text class="n-title" x="' + nd.x + '" y="' + (y + 18) + '" text-anchor="middle">' + esc(nd.t) + "</text>" +
+         '<text class="n-sub" x="' + nd.x + '" y="' + (y + 32) + '" text-anchor="middle">' + esc(nd.s) + "</text>" +
+         "</g>";
+}
+
+/** 直角折線連接（可帶文字標籤） */
+function diagEdge(d, label, lx, ly) {
+  let s = '<path d="' + d + '" fill="none" stroke="#55554f" stroke-width="1.4" ' +
+          'stroke-linejoin="round" marker-end="url(#dgArrow)"/>';
+  if (label) s += '<text class="e-label" x="' + lx + '" y="' + ly + '" text-anchor="middle">' + esc(label) + "</text>";
+  return s;
+}
+
+function renderDiagram() {
+  const m = state.model;
+  const nodes = diagramNodes(m);
+  const r = DG.rows, h = DG.h;
+  const top = i => r[i], bot = i => r[i] + h;
+  const b1 = DG.bus1, b2 = DG.bus2, b3 = DG.bus3;
+
+  let s = '<defs><marker id="dgArrow" viewBox="0 0 10 10" refX="9" refY="5" ' +
+          'markerWidth="6" markerHeight="6" orient="auto-start-reverse">' +
+          '<path d="M0,1 L9,5 L0,9 z" fill="#55554f"/></marker></defs>';
+
+  // Token → Embedding
+  s += diagEdge("M" + DG.cM + "," + bot(0) + " V" + top(1), "查表", DG.cM + 24, bot(0) + 16);
+  // Embedding → 三組權重
+  s += diagEdge("M" + DG.cM + "," + bot(1) + " V" + b1 + " H" + DG.cL + " V" + top(2));
+  s += diagEdge("M" + DG.cM + "," + bot(1) + " V" + top(2));
+  s += diagEdge("M" + DG.cM + "," + bot(1) + " V" + b1 + " H" + DG.cR + " V" + top(2));
+  s += '<text class="e-label" x="' + (DG.cM + 90) + '" y="' + (b1 - 5) + '" text-anchor="start">線性投影</text>';
+  // 權重 → Q / K / V
+  s += diagEdge("M" + DG.cL + "," + bot(2) + " V" + top(3));
+  s += diagEdge("M" + DG.cM + "," + bot(2) + " V" + top(3));
+  s += diagEdge("M" + DG.cR + "," + bot(2) + " V" + top(3));
+  // Q、K → MatMul
+  s += diagEdge("M" + DG.cL + "," + bot(3) + " V" + b2 + " H130 V" + top(4));
+  s += diagEdge("M" + DG.cM + "," + bot(3) + " V" + b2 + " H225 V" + top(4));
+  // 主幹
+  s += diagEdge("M" + DG.cQK + "," + bot(4) + " V" + top(5));
+  s += diagEdge("M" + DG.cQK + "," + bot(5) + " V" + top(6));
+  s += diagEdge("M" + DG.cQK + "," + bot(6) + " V" + top(7));
+  // A、V → A·V
+  s += diagEdge("M" + DG.cQK + "," + bot(7) + " V" + b3 + " H250 V" + top(8), "權重", 214, b3 - 6);
+  s += diagEdge("M" + DG.cR + "," + bot(3) + " V" + b3 + " H350 V" + top(8), "內容", 392, b3 - 6);
+  // A·V → Output
+  s += diagEdge("M" + DG.cAV + "," + bot(8) + " V" + top(9));
+
+  for (const nd of nodes) s += diagBox(nd, nd.panel === state.sel);
+
+  const svg = $("diagSvg");
+  svg.setAttribute("viewBox", "0 0 " + DG.W + " " + DG.H);
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  svg.innerHTML = s;
+}
+
+/* ===========================================================================
+   7. 細節面板：每個方塊對應一個 body(m) 函式
+   =========================================================================== */
+const ORDER = ["tok", "emb", "q", "k", "v", "qk", "sc", "sm", "a", "av", "out"];
+
+const PANELS = {
+
+  /* ---------------------------------------------------------- 輸入 --- */
+  tok: {
+    title: "輸入 Token 序列",
+    eq: "tokens → index",
+    why: "Transformer 不認得文字，只認得向量。第一步是把句子切成 Token，每個 Token 取得一個固定的編號，" +
+         "之後才能查表換成向量。本頁為了讓結果可重現，直接用 Token 字串的 FNV-1a 雜湊當作亂數種子 —— " +
+         "同一個字不管出現在哪一句、第幾個位置，都會拿到同一組 Embedding。",
+    body(m) {
+      let h = '<div class="chips">';
+      for (let i = 0; i < m.n; i++) {
+        h += '<div class="chip"><span class="ci">#' + i + '</span><span class="ct">' + esc(m.tokens[i]) +
+             '</span><span class="ch">0x' + hashString(m.tokens[i]).toString(16).padStart(8, "0") + "</span></div>";
+      }
+      h += "</div>";
+      h += tilesHTML([
+        { l: "序列長度 n", v: String(m.n), n: "注意力矩陣會是 " + m.n + " × " + m.n + "，計算量隨 n² 成長" },
+        { l: "模型維度 d_k", v: String(m.dk), n: "本頁簡化為 d_model = d_k = d_v，單一 Head" },
+        { l: "相異 Token", v: String(new Set(m.tokens).size), n: "重複的字會共用同一組 Embedding" }
+      ]);
+      h += '<div class="note">注意這裡<strong style="color:var(--ink-2)">沒有位置編碼（Positional Encoding）</strong>。' +
+           "純 Self-Attention 對順序是不敏感的 —— 把 Token 順序打亂，注意力矩陣只會跟著換列換行，數值不變。" +
+           "真實的 Transformer 會在 Embedding 上加位置資訊來解決這點。</div>";
+      return h;
+    }
+  },
+
+  /* ------------------------------------------------------ Embedding --- */
+  emb: {
+    title: "Embedding　E",
+    eq: "E ∈ ℝ^(n × d_k)",
+    why: "查表把離散符號換成連續向量，之後才談得上「距離」與「相似度」。真實模型裡這張表是訓練出來的；" +
+         "本頁用每個 Token 的雜湊當種子產生 N(0,1) 常態亂數，所以同字同向量、換句子也不變。",
+    body(m) {
+      let h = matrixHTML({
+        title: "E", sub: "Embedding", dims: m.n + " × " + m.dk,
+        rowLabels: m.tokens, colLabels: dimLabels(m.dk, "d"), data: m.E
+      });
+      h += '<div class="note">每一列是一個 Token 的向量，每一行是一個特徵維度。' +
+           "接下來這張表會被三組不同的權重矩陣各投影一次，分裂成 Q、K、V 三種角色。</div>";
+      return h;
+    }
+  },
+
+  /* -------------------------------------------------------- Q / K / V --- */
+  q: {
+    title: "Q＝E · W_q　（Query）",
+    eq: "Q = E · W_q",
+    why: "Query 代表「我要找什麼」。每個 Token 都發出一個查詢向量，稍後會拿去跟所有 Token 的 Key 比對。" +
+         "W_q 是可學習參數 —— 整層 Self-Attention 需要訓練的東西，就只有 W_q、W_k、W_v 這三個矩陣。",
+    body(m) { return projBody(m, "Q", "W_q", m.Wq, m.Q); }
+  },
+  k: {
+    title: "K＝E · W_k　（Key）",
+    eq: "K = E · W_k",
+    why: "Key 代表「我能提供什麼」。它是被查詢的那一方：Query 與 Key 的內積越大，代表這兩個 Token 越對得上。" +
+         "Q 和 K 一定要用不同的投影矩陣，否則相似度矩陣會被迫對稱，注意力就失去方向性了。",
+    body(m) { return projBody(m, "K", "W_k", m.Wk, m.K); }
+  },
+  v: {
+    title: "V＝E · W_v　（Value）",
+    eq: "V = E · W_v",
+    why: "Value 是「我實際攜帶的內容」。Q 與 K 只負責決定權重分配，真正被加權搬運到輸出的是 V。" +
+         "把「用什麼比對」和「搬什麼內容」拆開，是 Attention 比單純加權平均強的關鍵。",
+    body(m) { return projBody(m, "V", "W_v", m.Wv, m.V); }
+  },
+
+  /* ------------------------------------------------------ 點積相似度 --- */
+  qk: {
+    title: "點積相似度　Q · Kᵀ",
+    eq: "S_raw = Q · Kᵀ",
+    why: "一次算完所有 Token 兩兩之間的對齊程度：第 i 列第 j 行 = 第 i 個 Token 的 Query 與第 j 個 Token 的 Key 的內積。" +
+         "內積越大代表方向越接近。注意這個矩陣不是對稱的 —— 「我看貓」和「貓看我」的分數可以完全不同。",
+    body(m) {
+      let h = matrixHTML({
+        title: "S_raw", sub: "Q · Kᵀ（尚未縮放）", dims: m.n + " × " + m.n,
+        rowLabels: m.tokens, colLabels: m.tokens, data: m.Sraw,
+        mode: "div", maxAbs: m.maxAbsRaw, interactive: true
+      });
+      h += tilesHTML([
+        { l: "標準差 σ", v: m.stdRaw.toFixed(2), n: "理論上隨 √d_k 成長（樣本只有 " + (m.n * m.n) + " 格，會有誤差）" },
+        { l: "最大絕對值", v: m.maxAbsRaw.toFixed(2), n: "d_k 越大，這個數字會跟著漲" },
+        { l: "是否對稱", v: "否", n: "S[i][j] ≠ S[j][i]，注意力是有方向的" }
+      ]);
+      h += '<div class="note"><strong style="color:var(--ink-2)">藍色為正、紅色為負</strong>，灰色接近 0。' +
+           "把上方的 d_k 調大，會看到數值整體跟著變大 —— 這正是下一步要處理的問題。</div>";
+      return h;
+    }
+  },
+
+  /* ---------------------------------------------------------- 縮放 --- */
+  sc: {
+    title: "縮放　÷ √d_k",
+    eq: "S = Q · Kᵀ / √d_k",
+    why: "d_k 個獨立分量相加，內積的變異數會隨 d_k 線性成長；除以 √d_k 剛好把標準差拉回 1 附近。" +
+         "不除的話，分數會大到讓 Softmax 幾乎變成 one-hot，梯度接近 0、模型訓練不動 —— " +
+         "這就是論文裡 Scaled Dot-Product 的「Scaled」由來。",
+    body(m) {
+      let h = tilesHTML([
+        { l: "縮放前 σ", v: m.stdRaw.toFixed(2), n: "Q·Kᵀ 原始分數的標準差" },
+        { l: "縮放後 σ", v: m.stdS.toFixed(2), n: "÷ √" + m.dk + " = ÷ " + Math.sqrt(m.dk).toFixed(3) + " 之後" },
+        { l: "若不縮放的尖峰", v: m.peakRaw.toFixed(3), n: "Softmax 後各列最大權重的平均" },
+        { l: "縮放後的尖峰", v: m.peakS.toFixed(3), n: "越接近 1 代表分布越飽和、梯度越小" }
+      ]);
+      h += '<div class="mat-row">' +
+        '<div class="mat-box">' + matrixHTML({
+          title: "縮放前", sub: "Q · Kᵀ", dims: m.n + " × " + m.n,
+          rowLabels: m.tokens, colLabels: m.tokens, data: m.Sraw,
+          mode: "div", maxAbs: m.maxAbsRaw, interactive: true
+        }) + "</div>" +
+        '<div class="mat-box">' + matrixHTML({
+          title: "縮放後", sub: "÷ " + Math.sqrt(m.dk).toFixed(3), dims: m.n + " × " + m.n,
+          rowLabels: m.tokens, colLabels: m.tokens, data: m.S,
+          mode: "div", maxAbs: m.maxAbs, interactive: true
+        }) + "</div></div>";
+      h += '<div class="note">兩張表的顏色各自獨立正規化，所以看起來相近 —— 真正的差別在上面小卡的絕對數值。' +
+           "把 d_k 從 2 切到 16，會看到「若不縮放的尖峰」一路逼近 1.00，而縮放後的尖峰穩定得多。</div>";
+      return h;
+    }
+  },
+
+  /* -------------------------------------------------------- Softmax --- */
+  sm: {
+    title: "Softmax（逐列，÷ T）",
+    eq: "A = softmax(S / T)",
+    why: "對每一列做 Softmax，把分數轉成總和為 1 的機率分布。實作上要先減去該列最大值再取 exp，否則大數會讓 exp 溢位。" +
+         "Temperature T 不是原論文的東西，是推論期常用的旋鈕：T → 0 逼近 one-hot（只看最像的那個），T 變大則趨近均勻分布。",
+    body(m) {
+      let h = tilesHTML([
+        { l: "目前 T", v: state.temp.toFixed(2), n: "拖上方拉桿即時改變" },
+        { l: "各列最大權重平均", v: m.peakS.toFixed(3), n: "1.00 = 完全集中；1/n = " + (1 / m.n).toFixed(3) + " 代表均勻" },
+        { l: "每列總和", v: "1.0000", n: "Softmax 的定義保證，誤差在 1e-15 量級" }
+      ]);
+      h += '<div class="two-col"><div style="min-width:0">' +
+           matrixHTML({
+             title: "A", sub: "softmax(S / " + state.temp.toFixed(2) + ")", dims: m.n + " × " + m.n,
+             rowLabels: m.tokens, colLabels: m.tokens, data: m.A, mode: "seq", interactive: true
+           }) +
+           seqLegendHTML("注意力權重") +
+           "</div><div>" + distHTML() + "</div></div>";
+      h += '<div class="note">把 T 拉到 0.1 再拉到 5，觀察同一列的長條從「一根獨大」變成「幾乎等高」。' +
+           "分數本身沒變，變的只是 Softmax 的銳利度。</div>";
+      return h;
+    }
+  },
+
+  /* ----------------------------------------------------- 注意力矩陣 --- */
+  a: {
+    title: "注意力矩陣　A",
+    eq: "A ∈ ℝ^(n × n)，每列總和 = 1",
+    why: "這張 n×n 矩陣就是整個機制的產物：第 i 列告訴你第 i 個 Token 把它的注意力分給了誰。" +
+         "列 = Query（誰在看），行 = Key（被看）。點選左側的 Token 標籤或下方連結圖的方塊，可以鎖定任一列細看。",
+    body(m) {
+      let h = '<div class="two-col"><div style="min-width:0">' +
+              matrixHTML({
+                title: "A", sub: "注意力權重", dims: m.n + " × " + m.n,
+                rowLabels: m.tokens, colLabels: m.tokens, data: m.A, mode: "seq", interactive: true
+              }) + seqLegendHTML("注意力權重") +
+              "</div><div>" + distHTML() + "</div></div>";
+      h += '<h3 style="font-size:14px;margin:26px 0 6px">Attention Flow　互動連結圖</h3>' +
+           '<div class="note" style="margin-top:0;margin-bottom:14px">' +
+           "左欄是發出查詢的 Query Token，右欄是被查詢的 Key Token。把滑鼠移到（或點一下）任一 Token，" +
+           "就會高亮它對所有 Token 的注意力連線，線的粗細與不透明度隨權重變化。</div>" +
+           '<div class="flow-wrap"><div style="min-width:0">' +
+           '<svg class="flow" id="flowSvg" role="img" aria-label="注意力連結圖"></svg>' +
+           '</div><div class="flow-side" id="flowSide"></div></div>';
+      return h;
+    },
+    after() { renderFlow(); }          // 面板插入 DOM 之後才能畫 SVG
+  },
+
+  /* ------------------------------------------------------- 加權取值 --- */
+  av: {
+    title: "加權取值　A · V",
+    eq: "Output = A · V",
+    why: "最後一步只是一個矩陣相乘：用注意力權重把所有 Token 的 Value 向量做加權平均。" +
+         "第 i 列輸出 = Σⱼ A[i][j] × V[j]。到這裡，每個 Token 的表示就「看過」整個句子了。",
+    body(m) {
+      let h = '<div class="mat-row">' +
+        '<div class="mat-box">' + matrixHTML({
+          title: "A", sub: "權重", dims: m.n + " × " + m.n,
+          rowLabels: m.tokens, colLabels: m.tokens, data: m.A, mode: "seq", interactive: true
+        }) + "</div>" +
+        '<div class="mat-box">' + matrixHTML({
+          title: "V", sub: "內容", dims: m.n + " × " + m.dk,
+          rowLabels: m.tokens, colLabels: dimLabels(m.dk, "d"), data: m.V
+        }) + "</div>" +
+        '<div class="mat-box">' + matrixHTML({
+          title: "Output", sub: "A · V", dims: m.n + " × " + m.dk,
+          rowLabels: m.tokens, colLabels: dimLabels(m.dk, "d"), data: m.O, interactive: true
+        }) + "</div></div>";
+
+      const q = activeQ();
+      if (q !== null && q < m.n) {
+        let terms = [];
+        for (let j = 0; j < m.n; j++) terms.push(m.A[q][j].toFixed(2) + "·V[" + esc(m.tokens[j]) + "]");
+        h += '<div class="note">目前選取的「' + esc(m.tokens[q]) + "」這一列，實際展開就是：<br>" +
+             "<code>Output[" + esc(m.tokens[q]) + "] = " + terms.join(" + ") + "</code></div>";
+      }
+      return h;
+    }
+  },
+
+  /* ---------------------------------------------------------- 輸出 --- */
+  out: {
+    title: "輸出　Output",
+    eq: "n × d_k",
+    why: "形狀和輸入的 Embedding 一模一樣（n × d_k）—— 這是刻意設計的，才能直接做殘差相加、也才能把很多層疊起來。" +
+         "真實的 Transformer 接下來會做：多頭拼接 → 線性投影 → 殘差 + LayerNorm → Feed-Forward → 殘差 + LayerNorm，然後進入下一層。",
+    body(m) {
+      let h = '<div class="mat-row">' +
+        '<div class="mat-box">' + matrixHTML({
+          title: "E", sub: "輸入 Embedding", dims: m.n + " × " + m.dk,
+          rowLabels: m.tokens, colLabels: dimLabels(m.dk, "d"), data: m.E, interactive: true
+        }) + "</div>" +
+        '<div class="mat-box">' + matrixHTML({
+          title: "Output", sub: "本層輸出", dims: m.n + " × " + m.dk,
+          rowLabels: m.tokens, colLabels: dimLabels(m.dk, "d"), data: m.O, interactive: true
+        }) + "</div></div>";
+      h += '<div class="note">兩張表形狀相同，但內容不同：左邊每一列只知道自己，右邊每一列已經融合了整句話。' +
+           "這就是 Self-Attention 這一層做的全部事情 —— 剩下的都是把它堆疊起來的工程。</div>";
+      return h;
+    }
+  }
+};
+
+/** Q / K / V 三個面板共用的版面：E、權重、結果三張表 */
+function projBody(m, name, wname, W, R) {
+  let h = '<div class="mat-row">' +
+    '<div class="mat-box">' + matrixHTML({
+      title: "E", sub: "Embedding", dims: m.n + " × " + m.dk,
+      rowLabels: m.tokens, colLabels: dimLabels(m.dk, "d"), data: m.E, interactive: true
+    }) + "</div>" +
+    '<div class="mat-box">' + matrixHTML({
+      title: wname, sub: "可學習權重", dims: m.dk + " × " + m.dk,
+      rowLabels: dimLabels(m.dk, "d"), colLabels: dimLabels(m.dk, "d"), data: W
+    }) + "</div>" +
+    '<div class="mat-box">' + matrixHTML({
+      title: name, sub: "= E · " + wname, dims: m.n + " × " + m.dk,
+      rowLabels: m.tokens, colLabels: dimLabels(m.dk, "d"), data: R, interactive: true
+    }) + "</div></div>";
+  h += '<div class="note">按上方的「重抽權重」可以換掉 ' + esc(wname) +
+       "（Embedding 不變），觀察同一句話在不同投影下注意力怎麼改變。</div>";
+  return h;
+}
+
+/* ---------------------------- 注意力連結圖 ---------------------------- */
+function renderFlow() {
+  const svg = $("flowSvg");
+  if (!svg) return;                       // 目前面板不是 A，就不用畫
+  const m = state.model;
+
+  const W = 600, rowH = 46, padTop = 36, padBottom = 14;
+  const H = padTop + m.n * rowH + padBottom;
+  const boxW = 94, boxH = 30;
+  const leftX = 6, rightX = W - boxW - 6;
+  const act = activeQ();
+  const cy = i => padTop + i * rowH + boxH / 2;
+
+  let s = '<text class="collabel" x="' + (leftX + 2) + '" y="18">Query</text>' +
+          '<text class="collabel" x="' + (rightX + boxW) + '" y="18" text-anchor="end">Key</text>';
+
+  // 連線：非作用中的先畫（壓在底層），作用中的後畫
+  const edges = [];
+  for (let i = 0; i < m.n; i++)
+    for (let j = 0; j < m.n; j++) edges.push({ i: i, j: j, w: m.A[i][j] });
+
+  edges.sort((a, b) => {
+    const aAct = act === null || a.i === act, bAct = act === null || b.i === act;
+    if (aAct !== bAct) return aAct ? 1 : -1;
+    return a.w - b.w;
+  });
+
+  for (const e of edges) {
+    const isAct = act === null || e.i === act;
+    const x1 = leftX + boxW, y1 = cy(e.i), x2 = rightX, y2 = cy(e.j);
+    const mid = (x1 + x2) / 2;
+    const d = "M" + x1 + "," + y1 + " C" + mid + "," + y1 + " " + mid + "," + y2 + " " + x2 + "," + y2;
+    s += '<path d="' + d + '" fill="none" stroke="' +
+         (isAct ? rgbStr(seqColor(Math.max(e.w, 0.18))) : "#3d3d3a") +
+         '" stroke-width="' + (0.8 + e.w * 11).toFixed(2) +
+         '" stroke-opacity="' + (isAct ? (0.16 + e.w * 0.84).toFixed(3) : 0.05) + '" stroke-linecap="round"/>';
+    // 權重標在靠近 Key 端，此處曲線已分離到各自的列，標籤不會重疊
+    if (act !== null && e.i === act && e.w >= 0.02) {
+      s += '<text class="wlabel" x="' + (x2 - 10) + '" y="' + (y2 - 6) + '" text-anchor="end">' +
+           e.w.toFixed(2) + "</text>";
+    }
+  }
+
+  for (let i = 0; i < m.n; i++) {
+    const y = padTop + i * rowH;
+    const qa = act === i;
+    s += '<g class="tokbox" data-q="' + i + '">' +
+         '<rect x="' + leftX + '" y="' + y + '" width="' + boxW + '" height="' + boxH +
+           '" rx="8" fill="' + (qa ? "rgba(57,135,229,0.22)" : "#212120") +
+           '" stroke="' + (qa ? "#3987e5" : "rgba(255,255,255,0.12)") + '" stroke-width="' + (qa ? 2 : 1) + '"/>' +
+         '<text class="toklabel" x="' + (leftX + boxW / 2) + '" y="' + (y + boxH / 2 + 4.5) +
+           '" text-anchor="middle">' + esc(m.tokens[i]) + "</text></g>";
+
+    const w = act !== null ? m.A[act][i] : 0;
+    s += '<g><rect x="' + rightX + '" y="' + y + '" width="' + boxW + '" height="' + boxH +
+         '" rx="8" fill="#212120" stroke="' +
+         (act !== null ? rgbStr(seqColor(Math.max(w, 0.12))) : "rgba(255,255,255,0.12)") +
+         '" stroke-width="' + (act !== null && w > 0.3 ? 2 : 1) + '"/>' +
+         '<text class="toklabel" x="' + (rightX + boxW / 2) + '" y="' + (y + boxH / 2 + 4.5) +
+         '" text-anchor="middle">' + esc(m.tokens[i]) + "</text></g>";
+  }
+
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  svg.style.maxHeight = (H + 40) + "px";
+  svg.innerHTML = s;
+
+  const side = $("flowSide");
+  if (!side) return;
+  if (act === null) {
+    side.innerHTML = '<span class="k">尚未選取。目前顯示全部 ' + (m.n * m.n) + " 條連線。</span>";
+  } else {
+    const order = m.A[act].map((w, j) => ({ w: w, j: j })).sort((a, b) => b.w - a.w);
+    let h = "<div><strong>「" + esc(m.tokens[act]) + "」最關注：</strong></div>" +
+            '<ol style="margin:10px 0 0;padding-left:20px;line-height:1.9">';
+    for (const o of order.slice(0, 4)) {
+      h += "<li>" + esc(m.tokens[o.j]) + ' <span class="k" style="font-family:var(--mono)">' +
+           o.w.toFixed(3) + "</span></li>";
+    }
+    side.innerHTML = h + "</ol>" + '<div class="k" style="margin-top:12px">' +
+      (state.lockedQ === act ? "已鎖定，再點一次解除。" : "滑鼠移開即還原；點一下可鎖定。") + "</div>";
+  }
+}
+
+/* ---------------------------- 細節面板外框 ---------------------------- */
+function renderDetail() {
+  const m = state.model;
+  const p = PANELS[state.sel];
+  const idx = ORDER.indexOf(state.sel);
+
+  let h = '<div class="detail-head"><div class="detail-title">' +
+          '<div class="step-num">' + (idx + 1) + "</div><div>" +
+          "<h2>" + esc(p.title) + "</h2>" +
+          '<span class="eq">' + esc(p.eq) + "</span></div></div>" +
+          '<div class="nav-row">' +
+          '<button type="button" id="prevBtn"' + (idx === 0 ? " disabled" : "") + ">← 上一步</button>" +
+          '<span class="nav-pos">' + (idx + 1) + " / " + ORDER.length + "</span>" +
+          '<button type="button" id="nextBtn"' + (idx === ORDER.length - 1 ? " disabled" : "") + ">下一步 →</button>" +
+          "</div></div>";
+
+  h += '<p class="why-text">' + esc(p.why) + "</p>";
+  h += p.body(m);
+
+  const pane = $("detailPane");
+  pane.innerHTML = h;
+  if (p.after) p.after();
+
+  $("prevBtn").addEventListener("click", () => gotoPanel(ORDER[idx - 1]));
+  $("nextBtn").addEventListener("click", () => gotoPanel(ORDER[idx + 1]));
+}
+
+function gotoPanel(id) {
+  if (!id || !PANELS[id]) return;
+  state.sel = id;
+  renderDiagram();
+  renderDetail();
+  // 窄螢幕時方塊圖在上方，切換後把細節捲進視野
+  if (window.innerWidth <= 1040) {
+    $("detailPane").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+/** 完整重算 + 重繪 */
+function renderAll() {
+  try {
+    compute();
+    $("err").textContent = "";
+  } catch (e) {
+    $("err").textContent = "計算錯誤：" + e.message;
+    return;
+  }
+  if (state.lockedQ !== null && state.lockedQ >= state.model.n) state.lockedQ = 0;
+  if (state.hoverQ !== null && state.hoverQ >= state.model.n) state.hoverQ = null;
+  $("seedTag").textContent = state.seed;
+  renderDiagram();
+  renderDetail();
+}
+
+/** 只重畫與「選取哪一列」相關的部分（不重算模型） */
+function renderSelection() { renderDetail(); }
+
+/* ===========================================================================
+   8. 事件繫結
+   =========================================================================== */
+
+// --- 方塊圖：點方塊切換細節面板 ---
+$("diagSvg").addEventListener("click", function (e) {
+  const g = e.target.closest("[data-panel]");
+  if (g) gotoPanel(g.getAttribute("data-panel"));
+});
+
+// --- Token 輸入：逐字即時重算 ---
+$("tokenInput").addEventListener("input", function () {
+  const t = parseTokens(this.value);
+  if (t.length < 2) { $("err").textContent = "請至少輸入 2 個 Token（用空白或逗號分隔）。"; return; }
+  state.tokens = t; state.lockedQ = 0; state.hoverQ = null;
+  renderAll();
+});
+
+document.querySelectorAll("[data-preset]").forEach(function (b) {
+  b.addEventListener("click", function () {
+    $("tokenInput").value = this.dataset.preset;
+    $("tokenInput").dispatchEvent(new Event("input"));
+  });
+});
+
+$("dkSelect").addEventListener("change", function () {
+  state.dk = parseInt(this.value, 10);
+  renderAll();
+});
+
+$("tempRange").addEventListener("input", function () {
+  state.temp = parseFloat(this.value);
+  $("tempVal").textContent = state.temp.toFixed(2);
+  renderAll();
+});
+
+$("reroll").addEventListener("click", function () {
+  state.seed = (Math.random() * 0xFFFFFFFF) >>> 0;
+  renderAll();
+});
+
+$("reset").addEventListener("click", function () {
+  state.seed = 20260920; state.temp = 1.0; state.dk = 4;
+  state.lockedQ = 0; state.hoverQ = null; state.sel = "tok";
+  $("tempRange").value = "1"; $("tempVal").textContent = "1.00";
+  $("dkSelect").value = "4"; $("tokenInput").value = DEFAULT_TOKENS;
+  state.tokens = parseTokens(DEFAULT_TOKENS);
+  renderAll();
+});
+
+// --- 鍵盤：← → 切步驟，R 重抽權重 ---
+document.addEventListener("keydown", function (e) {
+  const inField = document.activeElement &&
+    (document.activeElement.tagName === "INPUT" || document.activeElement.tagName === "SELECT");
+  if (inField) return;
+  const idx = ORDER.indexOf(state.sel);
+  if (e.key === "ArrowRight") { e.preventDefault(); gotoPanel(ORDER[idx + 1]); }
+  else if (e.key === "ArrowLeft") { e.preventDefault(); gotoPanel(ORDER[idx - 1]); }
+  else if (e.key === "r" || e.key === "R") { $("reroll").click(); }
+});
+
+/* ------ 表格列標籤與連結圖方塊：hover 預覽、點擊鎖定（事件委派） ------ */
+document.addEventListener("mouseover", function (e) {
+  const el = e.target.closest ? e.target.closest("[data-q]") : null;
+  if (!el) return;
+  const q = parseInt(el.dataset.q, 10);
+  if (state.hoverQ !== q) { state.hoverQ = q; renderSelection(); }
+});
+
+document.addEventListener("mouseout", function (e) {
+  const el = e.target.closest ? e.target.closest("[data-q]") : null;
+  if (!el) return;
+  const to = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest("[data-q]") : null;
+  if (to) return;
+  if (state.hoverQ !== null) { state.hoverQ = null; renderSelection(); }
+});
+
+document.addEventListener("click", function (e) {
+  const el = e.target.closest ? e.target.closest("[data-q]") : null;
+  if (!el) return;
+  const q = parseInt(el.dataset.q, 10);
+  state.lockedQ = (state.lockedQ === q) ? null : q;
+  renderSelection();
+});
+
+/* ===========================================================================
+   9. 啟動
+   =========================================================================== */
+state.tokens = parseTokens(DEFAULT_TOKENS);
+renderAll();
+
+/* ---------------------------------------------------------------------------
+   10. 自我檢查（僅輸出到 console，不影響畫面）
+   --------------------------------------------------------------------------- */
+(function selfTest() {
+  const C = matmul([[1, 2], [3, 4]], [[5, 6], [7, 8]]);         // 期望 [[19,22],[43,50]]
+  const okMul = C[0][0] === 19 && C[0][1] === 22 && C[1][0] === 43 && C[1][1] === 50;
+  const T = transpose([[1, 2, 3], [4, 5, 6]]);                  // 期望 [[1,4],[2,5],[3,6]]
+  const okT = T.length === 3 && T[0][1] === 4 && T[2][0] === 3;
+  const sm = softmax([1, 2, 3], 1);
+  const okSum = Math.abs(sm.reduce((a, b) => a + b, 0) - 1) < 1e-12;
+  const okOrder = sm[2] > sm[1] && sm[1] > sm[0];
+  const okTemp = softmax([1, 2, 3], 5)[2] < sm[2];              // T 越大越平坦
+  const rowsOk = state.model.A.every(r => Math.abs(r.reduce((a, b) => a + b, 0) - 1) < 1e-10);
+  const okScale = Math.abs(state.model.S[0][0] * Math.sqrt(state.model.dk) - state.model.Sraw[0][0]) < 1e-12;
+  console.log("[self-test] matmul:", okMul, "| transpose:", okT, "| softmax sum=1:", okSum,
+              "| order:", okOrder, "| temperature flattens:", okTemp,
+              "| attention rows sum=1:", rowsOk, "| scale consistent:", okScale);
+})();
+</script>
+</body>
+</html>
