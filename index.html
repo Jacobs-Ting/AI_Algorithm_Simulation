@@ -301,6 +301,7 @@ kbd { font-family: var(--mono); font-size: 11px; background: var(--surface-2);
     點任一方塊，右側展開那一步的實際矩陣與數值 —— 含 RoPE、Causal Mask、多頭拼接、RMSNorm、SwiGLU、殘差、權重共享的 LM Head，
     全部是這個頁面當場用原生 JavaScript 算出來的。
   </p>
+  <p style="margin:0 0 14px"><a href="flow-animation.html" style="display:inline-block;font-size:13px;color:var(--warn);text-decoration:none;border:1px solid rgba(250,178,25,.45);border-radius:9px;padding:6px 12px;background:rgba(250,178,25,.08)">▶ 看動畫版：Transformer 運作流程動畫 →</a></p>
   <div class="formula">
     x ← x + MHA(<span class="hl">Norm</span>(x))　│　x ← x + FFN(<span class="hl">Norm</span>(x))　│　logits = <span class="hl-2">Norm</span>(x) · E<sup>ᵀ</sup>
   </div>
